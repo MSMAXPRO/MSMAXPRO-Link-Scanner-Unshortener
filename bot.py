@@ -17,10 +17,10 @@ app = Flask(__name__)
 # ---------------------------------------------------------
 def unshorten_url(url):
     try:
-        # User agent lagana zaroori hai taaki website block na kare
+        # User agent is crucial to avoid being blocked by websites
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         
-        # Timeout 9 second rakha hai taaki Vercel crash na ho
+        # Timeout 9 seconds to fit within Vercel's limit
         response = requests.head(url, allow_redirects=True, headers=headers, timeout=9)
         
         real_url = response.url
@@ -33,7 +33,8 @@ def unshorten_url(url):
         return None, str(e)
 
 def is_suspicious(url):
-    # Simple check for bad domains (Aap is list ko bada kar sakte hain)
+    # Simple check for bad keywords (You can add more)
+    # Note: 'hack' is added for testing purposes (e.g., hackthebox)
     bad_keywords = ['hack', 'free-money', 'steal', 'login-verify', 'ngrok']
     for word in bad_keywords:
         if word in url.lower():
@@ -47,18 +48,18 @@ def is_suspicious(url):
 def send_welcome(message):
     bot.reply_to(message, 
         "🕵️‍♂️ **MSMAXPRO Link Scanner**\n\n"
-        "Mujhe koi bhi Link bhejo, main bataunga ki wo kahan le ja raha hai aur Safe hai ya nahi.\n\n"
+        "Send me any Link, and I will reveal its real destination and check if it is Safe.\n\n"
         "⚡ **Supports:** bit.ly, tinyurl, t.co, etc."
     )
 
-# Har text message ko check karega ki wo Link hai ya nahi
+# Logic to scan every text message
 @bot.message_handler(func=lambda message: True)
 def scan_link(message):
     text = message.text.strip()
     
-    # Check agar ye URL jaisa dikhta hai
+    # Check if the text looks like a URL
     if not (text.startswith("http://") or text.startswith("https://")):
-        # Agar http nahi hai toh user ko ignore karo ya bata do
+        # Ignore non-link messages
         return 
 
     msg = bot.reply_to(message, "🔍 **Scanning Link...**")
@@ -66,7 +67,7 @@ def scan_link(message):
     real_url, status = unshorten_url(text)
     
     if not real_url:
-        bot.edit_message_text(f"❌ **Error:** Link khul nahi raha. ({status})", message.chat.id, msg.message_id)
+        bot.edit_message_text(f"❌ **Error:** Could not open link. ({status})", message.chat.id, msg.message_id)
         return
 
     # Safety Check
@@ -74,7 +75,7 @@ def scan_link(message):
     if is_suspicious(real_url):
         safety_status = "⚠️ **SUSPICIOUS / RISKY**"
     
-    # Domain Name nikalo
+    # Extract Domain Name
     domain = urlparse(real_url).netloc
 
     output = (
@@ -86,7 +87,7 @@ def scan_link(message):
         f"🛡️ **Status:** {safety_status}"
     )
     
-    # Disable web page preview taaki user galti se click na kare agar virus ho
+    # Disable web page preview to prevent accidental clicks on bad links
     bot.delete_message(message.chat.id, msg.message_id)
     bot.send_message(message.chat.id, output, parse_mode="Markdown", disable_web_page_preview=True)
 
