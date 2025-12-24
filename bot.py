@@ -9,11 +9,34 @@ from flask import Flask, request, Response
 # ---------------------------------------------------------
 TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 ADMIN_ID = os.environ.get('ADMIN_ID')
+
+# [ADDED] Connection to Unified Log Channel
+LOG_CHANNEL_ID = os.environ.get('LOG_CHANNEL_ID') 
+# [ADDED] Emergency Brake (Network Wide)
+MAINTENANCE_MODE = os.environ.get('MAINTENANCE_MODE', 'False')
+
 bot = telebot.TeleBot(TOKEN, threaded=False)
 app = Flask(__name__)
 
 # ---------------------------------------------------------
-# 2. UNSHORTENER LOGIC
+# 2. HELPER FUNCTIONS & TRACKING
+# ---------------------------------------------------------
+
+# [ADDED] Tracking Function for Unified Network
+def track_activity(message):
+    """
+    Logs activity to the central channel.
+    This allows the Calculator Bot to count these requests in the 1M limit.
+    """
+    try:
+        if LOG_CHANNEL_ID:
+            # Bot apna naam batayega (e.g. LinkScanner)
+            bot_name = bot.get_me().first_name
+            bot.send_message(LOG_CHANNEL_ID, f"🕵️‍♂️ Hit from {bot_name} | User: {message.from_user.id}")
+    except: pass
+
+# ---------------------------------------------------------
+# 3. UNSHORTENER LOGIC (Original)
 # ---------------------------------------------------------
 def unshorten_url(url):
     try:
@@ -42,10 +65,18 @@ def is_suspicious(url):
     return False
 
 # ---------------------------------------------------------
-# 3. BOT COMMANDS
+# 4. BOT COMMANDS
 # ---------------------------------------------------------
+
+# [ADDED] Maintenance Handler
+@bot.message_handler(func=lambda m: MAINTENANCE_MODE == 'True')
+def maintenance_msg(message):
+    bot.reply_to(message, "⚠️ **Maintenance:**\nLink Scanner is sleeping to save network bandwidth.")
+    return
+
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
+    track_activity(message) # [ADDED] Track
     bot.reply_to(message, 
         "🕵️‍♂️ **MSMAXPRO Link Scanner**\n\n"
         "Send me any Link, and I will reveal its real destination and check if it is Safe.\n\n"
@@ -61,6 +92,8 @@ def scan_link(message):
     if not (text.startswith("http://") or text.startswith("https://")):
         # Ignore non-link messages
         return 
+
+    track_activity(message) # [ADDED] Track Link Scan request
 
     msg = bot.reply_to(message, "🔍 **Scanning Link...**")
     
@@ -92,7 +125,7 @@ def scan_link(message):
     bot.send_message(message.chat.id, output, parse_mode="Markdown", disable_web_page_preview=True)
 
 # ---------------------------------------------------------
-# 4. SERVER SETUP
+# 5. SERVER SETUP
 # ---------------------------------------------------------
 @app.route('/', methods=['POST'])
 def webhook():
