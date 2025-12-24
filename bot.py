@@ -3,6 +3,7 @@ import os
 import requests
 from urllib.parse import urlparse
 from flask import Flask, request, Response
+from datetime import datetime
 
 # ---------------------------------------------------------
 # 1. CONFIGURATION
@@ -10,92 +11,120 @@ from flask import Flask, request, Response
 TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 ADMIN_ID = os.environ.get('ADMIN_ID')
 
-# [ADDED] Connection to Unified Log Channel
+# Connection to Unified Log Channel
 LOG_CHANNEL_ID = os.environ.get('LOG_CHANNEL_ID') 
-# [ADDED] Emergency Brake (Network Wide)
+# Emergency Brake
 MAINTENANCE_MODE = os.environ.get('MAINTENANCE_MODE', 'False')
+
+# Offset for 1 Million Limit Correction
+STARTING_OFFSET = 1700 
 
 bot = telebot.TeleBot(TOKEN, threaded=False)
 app = Flask(__name__)
 
 # ---------------------------------------------------------
-# 2. HELPER FUNCTIONS & TRACKING
+# 2. TRACKING & STATS (Unified Network)
 # ---------------------------------------------------------
 
-# [ADDED] Tracking Function for Unified Network
 def track_activity(message):
     """
-    Logs activity to the central channel.
-    This allows the Calculator Bot to count these requests in the 1M limit.
+    Logs activity safely. If Log Channel fails, Bot will NOT crash.
     """
+    if not LOG_CHANNEL_ID: return # Agar ID nahi hai to skip karo
+    
     try:
-        if LOG_CHANNEL_ID:
-            # Bot apna naam batayega (e.g. LinkScanner)
-            bot_name = bot.get_me().first_name
-            bot.send_message(LOG_CHANNEL_ID, f"🕵️‍♂️ Hit from {bot_name} | User: {message.from_user.id}")
-    except: pass
+        # Convert ID to integer to avoid string errors
+        channel_id_int = int(LOG_CHANNEL_ID)
+        bot_name = bot.get_me().first_name
+        
+        # Send Log
+        bot.send_message(channel_id_int, f"🕵️‍♂️ Hit from {bot_name} | User: {message.from_user.id}")
+    except Exception as e:
+        # Agar error aaye to print karo par bot ko mat roko
+        print(f"Tracking Error: {e}") 
+        pass
+
+# [ADDED] Shared Stats Command for Link Scanner too
+@bot.message_handler(commands=['stats'])
+def stats_command(message):
+    try:
+        if not LOG_CHANNEL_ID:
+            bot.reply_to(message, "⚠️ Log Channel ID missing in Vercel settings.")
+            return
+
+        channel_id_int = int(LOG_CHANNEL_ID)
+        active_users = bot.get_chat_member_count(channel_id_int)
+        
+        # Sync Logic
+        temp_msg = bot.send_message(channel_id_int, "Syncing Global Stats...")
+        current_logs = temp_msg.message_id - 1
+        total_requests = current_logs + STARTING_OFFSET
+        bot.delete_message(channel_id_int, temp_msg.message_id)
+        
+        LIMIT = 1000000 
+        remaining = LIMIT - total_requests
+        percent = (total_requests / LIMIT) * 100
+        
+        text = (
+            f"📊 **Global Network Stats (View from LinkScanner)**\n\n"
+            f"👥 **Unique Users:** {active_users}\n"
+            f"🔄 **Total Requests:** {total_requests:,}\n"
+            f"⚠️ **Network Limit:** 1,000,000\n"
+            f"✅ **Remaining:** {remaining:,}\n\n"
+            f"📈 **Load:** {percent:.4f}%\n"
+            f"🕒 Updated: `{datetime.now().strftime('%H:%M:%S')}`"
+        )
+        bot.reply_to(message, text, parse_mode="Markdown")
+    except Exception as e:
+        bot.reply_to(message, f"⚠️ Error fetching stats: {e}")
 
 # ---------------------------------------------------------
-# 3. UNSHORTENER LOGIC (Original)
+# 3. UNSHORTENER LOGIC
 # ---------------------------------------------------------
 def unshorten_url(url):
     try:
-        # User agent is crucial to avoid being blocked by websites
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-        
-        # Timeout 9 seconds to fit within Vercel's limit
         response = requests.head(url, allow_redirects=True, headers=headers, timeout=9)
-        
-        real_url = response.url
-        status = response.status_code
-        
-        return real_url, status
+        return response.url, response.status_code
     except requests.exceptions.Timeout:
-        return None, "Timeout (Site too slow)"
+        return None, "Timeout"
     except Exception as e:
         return None, str(e)
 
 def is_suspicious(url):
-    # Simple check for bad keywords (You can add more)
-    # Note: 'hack' is added for testing purposes (e.g., hackthebox)
     bad_keywords = ['hack', 'free-money', 'steal', 'login-verify', 'ngrok']
     for word in bad_keywords:
-        if word in url.lower():
-            return True
+        if word in url.lower(): return True
     return False
 
 # ---------------------------------------------------------
 # 4. BOT COMMANDS
 # ---------------------------------------------------------
 
-# [ADDED] Maintenance Handler
 @bot.message_handler(func=lambda m: MAINTENANCE_MODE == 'True')
 def maintenance_msg(message):
-    bot.reply_to(message, "⚠️ **Maintenance:**\nLink Scanner is sleeping to save network bandwidth.")
+    bot.reply_to(message, "⚠️ **Maintenance Mode Active.**")
     return
 
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
-    track_activity(message) # [ADDED] Track
+    # Tracking pehle try karenge
+    track_activity(message) 
+    
     bot.reply_to(message, 
         "🕵️‍♂️ **MSMAXPRO Link Scanner**\n\n"
-        "Send me any Link, and I will reveal its real destination and check if it is Safe.\n\n"
+        "Send me any Link to reveal its real destination.\n"
         "⚡ **Supports:** bit.ly, tinyurl, t.co, etc."
     )
 
-# Logic to scan every text message
 @bot.message_handler(func=lambda message: True)
 def scan_link(message):
     text = message.text.strip()
-    
-    # Check if the text looks like a URL
-    if not (text.startswith("http://") or text.startswith("https://")):
-        # Ignore non-link messages
-        return 
+    if not (text.startswith("http://") or text.startswith("https://")): return 
 
-    track_activity(message) # [ADDED] Track Link Scan request
+    track_activity(message) # Track Link Scan
 
-    msg = bot.reply_to(message, "🔍 **Scanning Link...**")
+    msg = bot.reply_to(message, "🔍 **Scanning...**")
     
     real_url, status = unshorten_url(text)
     
@@ -103,24 +132,20 @@ def scan_link(message):
         bot.edit_message_text(f"❌ **Error:** Could not open link. ({status})", message.chat.id, msg.message_id)
         return
 
-    # Safety Check
     safety_status = "✅ Safe to Click"
-    if is_suspicious(real_url):
-        safety_status = "⚠️ **SUSPICIOUS / RISKY**"
+    if is_suspicious(real_url): safety_status = "⚠️ **SUSPICIOUS**"
     
-    # Extract Domain Name
     domain = urlparse(real_url).netloc
 
     output = (
         f"🕵️‍♂️ **LINK REVEALED**\n"
         f"━━━━━━━━━━━━━━━━\n"
-        f"🔴 **Short Link:** {text}\n"
-        f"🟢 **Real Destination:**\n`{real_url}`\n\n"
+        f"🔴 **Short:** {text}\n"
+        f"🟢 **Real:**\n`{real_url}`\n\n"
         f"🌐 **Domain:** {domain}\n"
         f"🛡️ **Status:** {safety_status}"
     )
     
-    # Disable web page preview to prevent accidental clicks on bad links
     bot.delete_message(message.chat.id, msg.message_id)
     bot.send_message(message.chat.id, output, parse_mode="Markdown", disable_web_page_preview=True)
 
