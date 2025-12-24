@@ -23,33 +23,27 @@ bot = telebot.TeleBot(TOKEN, threaded=False)
 app = Flask(__name__)
 
 # ---------------------------------------------------------
-# 2. TRACKING & STATS (Unified Network)
+# 2. TRACKING & STATS (Ab Refresh Button ke saath)
 # ---------------------------------------------------------
 
 def track_activity(message):
-    """
-    Logs activity safely. If Log Channel fails, Bot will NOT crash.
-    """
-    if not LOG_CHANNEL_ID: return # Agar ID nahi hai to skip karo
-    
+    """Logs activity safely to Log Channel."""
+    if not LOG_CHANNEL_ID: return
     try:
-        # Convert ID to integer to avoid string errors
         channel_id_int = int(LOG_CHANNEL_ID)
         bot_name = bot.get_me().first_name
-        
-        # Send Log
+        # Log entry
         bot.send_message(channel_id_int, f"🕵️‍♂️ Hit from {bot_name} | User: {message.from_user.id}")
     except Exception as e:
-        # Agar error aaye to print karo par bot ko mat roko
-        print(f"Tracking Error: {e}") 
+        print(f"Tracking Error: {e}")
         pass
 
-# [ADDED] Shared Stats Command for Link Scanner too
+# [UPDATED] Stats Command with Refresh Button
 @bot.message_handler(commands=['stats'])
 def stats_command(message):
     try:
         if not LOG_CHANNEL_ID:
-            bot.reply_to(message, "⚠️ Log Channel ID missing in Vercel settings.")
+            bot.reply_to(message, "⚠️ Log Channel ID missing.")
             return
 
         channel_id_int = int(LOG_CHANNEL_ID)
@@ -74,9 +68,54 @@ def stats_command(message):
             f"📈 **Load:** {percent:.4f}%\n"
             f"🕒 Updated: `{datetime.now().strftime('%H:%M:%S')}`"
         )
-        bot.reply_to(message, text, parse_mode="Markdown")
+        
+        # Manual Refresh Button
+        markup = telebot.types.InlineKeyboardMarkup()
+        markup.add(telebot.types.InlineKeyboardButton("🔄 Refresh Network Stats", callback_data="refresh_stats"))
+        
+        bot.reply_to(message, text, parse_mode="Markdown", reply_markup=markup)
     except Exception as e:
-        bot.reply_to(message, f"⚠️ Error fetching stats: {e}")
+        bot.reply_to(message, f"⚠️ Error: {e}")
+
+# [ADDED] Callback Handler for Refresh
+@bot.callback_query_handler(func=lambda call: call.data == "refresh_stats")
+def refresh_callback(call):
+    try:
+        # Pura logic dobara run karne ki bajaye hum seedha function call kar rahe hain
+        # Lekin edit karne ke liye hum message delete karke naya bhej sakte hain ya edit kar sakte hain
+        # Simple tareeka: User ko naya stats dikha do ya message edit karo (yahan hum edit try karte hain)
+        
+        if not LOG_CHANNEL_ID: return
+
+        channel_id_int = int(LOG_CHANNEL_ID)
+        active_users = bot.get_chat_member_count(channel_id_int)
+        
+        temp_msg = bot.send_message(channel_id_int, "Syncing...")
+        current_logs = temp_msg.message_id - 1
+        total_requests = current_logs + STARTING_OFFSET
+        bot.delete_message(channel_id_int, temp_msg.message_id)
+        
+        LIMIT = 1000000
+        remaining = LIMIT - total_requests
+        percent = (total_requests / LIMIT) * 100
+        
+        text = (
+            f"📊 **Global Network Stats (View from LinkScanner)**\n\n"
+            f"👥 **Unique Users:** {active_users}\n"
+            f"🔄 **Total Requests:** {total_requests:,}\n"
+            f"⚠️ **Network Limit:** 1,000,000\n"
+            f"✅ **Remaining:** {remaining:,}\n\n"
+            f"📈 **Load:** {percent:.4f}%\n"
+            f"🕒 Updated: `{datetime.now().strftime('%H:%M:%S')}`"
+        )
+        
+        markup = telebot.types.InlineKeyboardMarkup()
+        markup.add(telebot.types.InlineKeyboardButton("🔄 Refresh Network Stats", callback_data="refresh_stats"))
+        
+        bot.edit_message_text(text, chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode="Markdown", reply_markup=markup)
+        bot.answer_callback_query(call.id, "Stats Refreshed!")
+    except: 
+        bot.answer_callback_query(call.id, "Error Refreshing")
 
 # ---------------------------------------------------------
 # 3. UNSHORTENER LOGIC
@@ -108,9 +147,7 @@ def maintenance_msg(message):
 
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
-    # Tracking pehle try karenge
     track_activity(message) 
-    
     bot.reply_to(message, 
         "🕵️‍♂️ **MSMAXPRO Link Scanner**\n\n"
         "Send me any Link to reveal its real destination.\n"
@@ -122,7 +159,7 @@ def scan_link(message):
     text = message.text.strip()
     if not (text.startswith("http://") or text.startswith("https://")): return 
 
-    track_activity(message) # Track Link Scan
+    track_activity(message) 
 
     msg = bot.reply_to(message, "🔍 **Scanning...**")
     
