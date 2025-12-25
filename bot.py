@@ -1,6 +1,7 @@
 import telebot
 import os
 import requests
+import urllib.request
 from flask import Flask, request, Response
 from urllib.parse import urlparse
 
@@ -15,7 +16,7 @@ bot = telebot.TeleBot(TOKEN, threaded=False)
 app = Flask(__name__)
 
 # ---------------------------------------------------------
-# 2. SMART UNSHORTENER & SCANNER
+# 2. HYBRID UNSHORTENER ENGINE (3 Layers)
 # ---------------------------------------------------------
 def log_to_channel(text):
     if not LOG_CHANNEL_ID: return
@@ -24,27 +25,42 @@ def log_to_channel(text):
     except: pass
 
 def get_real_url(url):
-    """
-    Tries to follow redirects. 
-    If no redirect happens (Direct link or Blocked), returns the original URL.
-    """
+    # --- LAYER 1: Requests with Mobile Header (Standard) ---
     try:
         session = requests.Session()
-        # Fake Mobile Headers to fool Bitly
         headers = {
             "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36",
-            "Referer": "https://www.google.com/",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+            "Referer": "https://www.google.com/"
         }
-        # Timeout badha diya aur verify=False kiya (SSL errors avoid karne ke liye)
-        response = session.get(url, headers=headers, timeout=12, allow_redirects=True, verify=False)
-        return response.url
-    except Exception as e:
-        # Agar network error aaye, tab bhi Original URL wapas karo taaki scan ho sake
-        return url
+        response = session.get(url, headers=headers, timeout=5, allow_redirects=True, verify=False)
+        if response.url != url and "bit.ly" not in response.url:
+            return response.url
+    except: pass
+
+    # --- LAYER 2: Urllib Request (Bypasses some Python blocks) ---
+    try:
+        req = urllib.request.Request(
+            url, 
+            data=None, 
+            headers={'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_9_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/35.0.1916.47 Safari/537.36'}
+        )
+        with urllib.request.urlopen(req, timeout=5) as response:
+            final_url = response.geturl()
+            if final_url != url and "bit.ly" not in final_url:
+                return final_url
+    except: pass
+
+    # --- LAYER 3: Manual Redirect Follow (Head Request) ---
+    try:
+        response = requests.head(url, allow_redirects=True, timeout=5)
+        if response.url != url:
+            return response.url
+    except: pass
+
+    # Agar teeno fail huye, toh Original wapas karo (Scan will still happen)
+    return url
 
 def check_virus_keywords(url):
-    """Checks for suspicious words in the FINAL URL"""
     bad_keywords = ['hack', 'free-money', 'steal', 'login', 'verify', 'account-update', 'ngrok', 'crypto']
     for word in bad_keywords:
         if word in url.lower():
@@ -57,11 +73,7 @@ def check_virus_keywords(url):
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
     try:
-        bot.send_message(
-            message.chat.id, 
-            "🕵️‍♂️ **Deep Link Scanner is Ready!**\n\n"
-            "Send me Bitly, TinyURL, or Direct Links."
-        )
+        bot.send_message(message.chat.id, "**Deep Link Scanner Online!** Send links.")
     except: pass
 
 @bot.message_handler(func=lambda m: True)
@@ -70,42 +82,44 @@ def scan_link(message):
     if not (text.startswith("http://") or text.startswith("https://")): return 
 
     try:
-        status_msg = bot.send_message(message.chat.id, "🔍 **Analyzing Link...**")
+        status_msg = bot.send_message(message.chat.id, "🔍 **Cracking Link...**")
         
-        # Step 1: Get Real URL (Redirect or Original)
+        # Hybrid Engine Call
         real_url = get_real_url(text)
         
-        # Step 2: Security Check
+        # Analysis
         is_risky, keyword = check_virus_keywords(real_url)
-        
         domain = urlparse(real_url).netloc
         
         if is_risky:
-            # ⚠️ DANGER ALERT
             bot.edit_message_text(
-                f"⚠️ **SUSPICIOUS LINK DETECTED!**\n"
-                f"━━━━━━━━━━━━━━━━\n"
-                f"🔴 **Input:** {text}\n"
-                f"💀 **Keyword Found:** `{keyword}`\n"
-                f"🛑 **Status:** UNSAFE (Do not click)",
+                f"⚠️ **SUSPICIOUS LINK!**\n"
+                f"🔴 Input: {text}\n"
+                f"💀 Keyword: `{keyword}`\n"
+                f"🛑 Status: UNSAFE",
                 message.chat.id, status_msg.message_id
             )
         else:
-            # ✅ SAFE REPORT
+            # Check if Unshorten worked
+            if real_url == text:
+                # Agar same raha (Bitly block)
+                status_text = "⚠️ Could not unshorten (Protected)"
+            else:
+                status_text = "✅ Safe to Click"
+
             bot.edit_message_text(
-                f"✅ **Link Scan Report**\n"
-                f"━━━━━━━━━━━━━━━━\n"
-                f"🔗 **Real Destination:**\n{real_url}\n\n"
+                f"✅ **Scan Report**\n"
+                f"🔗 **Real:** {real_url}\n"
                 f"🌐 **Domain:** {domain}\n"
-                f"🛡️ **Status:** Seems Safe",
+                f"🛡️ **Status:** {status_text}",
                 message.chat.id, status_msg.message_id,
                 disable_web_page_preview=True
             )
             
-        log_to_channel(f"✅ Scan Done | User: {message.from_user.id} | Domain: {domain}")
+        log_to_channel(f"✅ Scan | User: {message.from_user.id} | Domain: {domain}")
 
     except Exception as e:
-        bot.send_message(message.chat.id, f"❌ Error: {e}")
+        bot.send_message(message.chat.id, f"Error: {e}")
 
 # ---------------------------------------------------------
 # 4. SERVER RUN
