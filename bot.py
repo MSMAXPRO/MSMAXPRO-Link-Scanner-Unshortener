@@ -17,7 +17,7 @@ bot = telebot.TeleBot(TOKEN, threaded=False)
 app = Flask(__name__)
 
 # ---------------------------------------------------------
-# 2. ULTIMATE UNSHORTENER (4 Layers)
+# 2. THE ULTIMATE UNSHORTENER ENGINE (5 LAYERS)
 # ---------------------------------------------------------
 def log_to_channel(text):
     if not LOG_CHANNEL_ID: return
@@ -25,26 +25,8 @@ def log_to_channel(text):
         bot.send_message(int(LOG_CHANNEL_ID), text)
     except: pass
 
-def unshorten_via_proxy(url):
-    """
-    Layer 4: Asks an external website to check the link.
-    Bypasses Vercel IP Blocks completely.
-    """
-    try:
-        # CheckShortURL website ko use karte hain as a proxy
-        check_url = f"http://checkshorturl.com/expand.php?u={url}"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-        response = requests.get(check_url, headers=headers, timeout=10).text
-        
-        # HTML mein se asli link dhundna (Regex magic)
-        match = re.search(r'Long URL.*?href="(.*?)"', response, re.DOTALL)
-        if match:
-            return match.group(1)
-    except: pass
-    return None
-
 def get_real_url(url):
-    # --- LAYER 1: Standard Request ---
+    # --- LAYER 1: Standard Request (Direct Check) ---
     try:
         session = requests.Session()
         headers = {
@@ -52,15 +34,44 @@ def get_real_url(url):
             "Referer": "https://www.google.com/"
         }
         response = session.get(url, headers=headers, timeout=4, allow_redirects=True, verify=False)
-        if response.url != url and "bit.ly" not in response.url:
+        if response.url != url and "bit.ly" not in response.url and response.url.startswith("http"):
             return response.url
     except: pass
 
-    # --- LAYER 2: Urllib ---
+    # --- LAYER 2: ExpandURL API (New & Powerful) ---
+    try:
+        # Yeh seedha text return karta hai, koi scraping nahi chahiye
+        api_url = f"http://expandurl.com/api/v1/?url={url}"
+        r = requests.get(api_url, timeout=6)
+        if r.status_code == 200 and r.text.startswith("http"):
+            return r.text.strip()
+    except: pass
+
+    # --- LAYER 3: Unshorten.me API ---
+    try:
+        api_url = f"https://unshorten.me/json/{url}"
+        r = requests.get(api_url, timeout=5).json()
+        if r['success'] and r['resolved_url'] and r['resolved_url'].startswith("http"):
+            return r['resolved_url']
+    except: pass
+
+    # --- LAYER 4: Proxy Scraper (CheckShortURL) ---
+    try:
+        check_url = f"http://checkshorturl.com/expand.php?u={url}"
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        response = requests.get(check_url, headers=headers, timeout=8).text
+        
+        # Improved Regex to find valid http link
+        match = re.search(r'Long URL.*?href="(http.*?)"', response, re.DOTALL)
+        if match and match.group(1):
+            return match.group(1)
+    except: pass
+
+    # --- LAYER 5: Fallback (Urllib) ---
     try:
         req = urllib.request.Request(
             url, 
-            headers={'User-Agent': "Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Mobile/15E148 Safari/604.1"}
+            headers={'User-Agent': "Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X)"}
         )
         with urllib.request.urlopen(req, timeout=4) as response:
             final_url = response.geturl()
@@ -68,25 +79,13 @@ def get_real_url(url):
                 return final_url
     except: pass
 
-    # --- LAYER 3: External API (Unshorten.me) ---
-    try:
-        api_url = f"https://unshorten.me/json/{url}"
-        r = requests.get(api_url, timeout=5).json()
-        if r['success'] and r['resolved_url']:
-            return r['resolved_url']
-    except: pass
-
-    # --- LAYER 4: Proxy Scraper (The IP Bypass) ---
-    # Jab sab fail ho jaye, toh proxy site se scrap karo
-    proxy_result = unshorten_via_proxy(url)
-    if proxy_result:
-        return proxy_result
-
-    # Give up
+    # Agar sab fail ho jaye, toh Original wapas karo (Lekin empty nahi)
     return url
 
 def check_virus_keywords(url):
     bad_keywords = ['hack', 'free-money', 'steal', 'login', 'verify', 'account-update', 'ngrok', 'crypto']
+    if not url: return False, None # Safety check for empty url
+    
     for word in bad_keywords:
         if word in url.lower():
             return True, word
@@ -98,7 +97,7 @@ def check_virus_keywords(url):
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
     try:
-        bot.send_message(message.chat.id, "**Deep Link Scanner Online!** (Proxy Active)")
+        bot.send_message(message.chat.id, "**Deep Link Scanner v5.0** (Bug Fixed)")
     except: pass
 
 @bot.message_handler(func=lambda m: True)
@@ -107,39 +106,49 @@ def scan_link(message):
     if not (text.startswith("http://") or text.startswith("https://")): return 
 
     try:
-        status_msg = bot.send_message(message.chat.id, "🔍 **Bypassing IP Block...**")
+        status_msg = bot.send_message(message.chat.id, "🔍 **Digging Deep...**")
         
-        # Call the Ultimate Engine
+        # Engine Call
         real_url = get_real_url(text)
         
-        # Analysis
+        # ANALYSIS LOGIC (Crucial Fix)
+        if not real_url or real_url == text:
+            # Agar URL change nahi hua ya empty aaya
+            bot.edit_message_text(
+                f"✅ **Scan Report**\n"
+                f"🔗 **Link:** {text}\n"
+                f"⚠️ **Note:** Could not unshorten (Protected/Direct Link).\n"
+                f"🛡️ **Status:** Seemingly Safe",
+                message.chat.id, status_msg.message_id,
+                disable_web_page_preview=True
+            )
+            return
+
+        # Agar Unshorten Success Hua:
         is_risky, keyword = check_virus_keywords(real_url)
         domain = urlparse(real_url).netloc
         
         if is_risky:
             bot.edit_message_text(
-                f"⚠️ **SUSPICIOUS LINK!**\n"
+                f"⚠️ **SUSPICIOUS LINK DETECTED!**\n"
                 f"🔴 Input: {text}\n"
                 f"💀 Keyword: `{keyword}`\n"
                 f"🛑 Status: UNSAFE",
                 message.chat.id, status_msg.message_id
             )
         else:
-            if real_url == text:
-                status_text = "⚠️ Hard Block (Server refused)"
-            else:
-                status_text = "✅ Safe to Click"
-
             bot.edit_message_text(
-                f"✅ **Scan Report**\n"
-                f"🔗 **Real:** {real_url}\n"
+                f"✅ **Link Revealed**\n"
+                f"━━━━━━━━━━━━━━━━\n"
+                f"🔴 **Short:** {text}\n"
+                f"🟢 **Real:**\n{real_url}\n\n"
                 f"🌐 **Domain:** {domain}\n"
-                f"🛡️ **Status:** {status_text}",
+                f"🛡️ **Status:** ✅ Safe to Click",
                 message.chat.id, status_msg.message_id,
                 disable_web_page_preview=True
             )
             
-            log_to_channel(f"✅ Scan Success (Proxy) | User: {message.from_user.id} | Domain: {domain}")
+        log_to_channel(f"✅ Success | User: {message.from_user.id} | Domain: {domain}")
 
     except Exception as e:
         bot.send_message(message.chat.id, f"Error: {e}")
