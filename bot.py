@@ -81,10 +81,6 @@ def stats_command(message):
 @bot.callback_query_handler(func=lambda call: call.data == "refresh_stats")
 def refresh_callback(call):
     try:
-        # Pura logic dobara run karne ki bajaye hum seedha function call kar rahe hain
-        # Lekin edit karne ke liye hum message delete karke naya bhej sakte hain ya edit kar sakte hain
-        # Simple tareeka: User ko naya stats dikha do ya message edit karo (yahan hum edit try karte hain)
-        
         if not LOG_CHANNEL_ID: return
 
         channel_id_int = int(LOG_CHANNEL_ID)
@@ -118,12 +114,14 @@ def refresh_callback(call):
         bot.answer_callback_query(call.id, "Error Refreshing")
 
 # ---------------------------------------------------------
-# 3. UNSHORTENER LOGIC
+# 3. UNSHORTENER LOGIC (FIXED)
 # ---------------------------------------------------------
 def unshorten_url(url):
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-        response = requests.head(url, allow_redirects=True, headers=headers, timeout=9)
+        # User-Agent is critical for Bitly/Google
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        # Fixed: Changed requests.head to requests.get
+        response = requests.get(url, allow_redirects=True, headers=headers, timeout=9)
         return response.url, response.status_code
     except requests.exceptions.Timeout:
         return None, "Timeout"
