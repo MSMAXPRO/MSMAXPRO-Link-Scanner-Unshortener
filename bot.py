@@ -10,76 +10,149 @@ from datetime import datetime
 # ---------------------------------------------------------
 TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 ADMIN_ID = os.environ.get('ADMIN_ID')
-LOG_CHANNEL_ID = os.environ.get('LOG_CHANNEL_ID')
+
+# Connection to Unified Log Channel
+LOG_CHANNEL_ID = os.environ.get('LOG_CHANNEL_ID') 
+# Emergency Brake
 MAINTENANCE_MODE = os.environ.get('MAINTENANCE_MODE', 'False')
+
+# Offset for 1 Million Limit Correction
 STARTING_OFFSET = 1700 
 
 bot = telebot.TeleBot(TOKEN, threaded=False)
 app = Flask(__name__)
 
 # ---------------------------------------------------------
-# 2. ADVANCED UNSHORTENER (Anti-Bot Bypass)
+# 2. TRACKING & STATS (Ab Refresh Button ke saath)
+# ---------------------------------------------------------
+
+def track_activity(message):
+    """Logs activity safely to Log Channel."""
+    if not LOG_CHANNEL_ID: return
+    try:
+        channel_id_int = int(LOG_CHANNEL_ID)
+        bot_name = bot.get_me().first_name
+        # Log entry
+        bot.send_message(channel_id_int, f"🕵️‍♂️ Hit from {bot_name} | User: {message.from_user.id}")
+    except Exception as e:
+        print(f"Tracking Error: {e}")
+        pass
+
+# [UPDATED] Stats Command with Refresh Button
+@bot.message_handler(commands=['stats'])
+def stats_command(message):
+    try:
+        if not LOG_CHANNEL_ID:
+            bot.reply_to(message, "⚠️ Log Channel ID missing.")
+            return
+
+        channel_id_int = int(LOG_CHANNEL_ID)
+        active_users = bot.get_chat_member_count(channel_id_int)
+        
+        # Sync Logic
+        temp_msg = bot.send_message(channel_id_int, "Syncing Global Stats...")
+        current_logs = temp_msg.message_id - 1
+        total_requests = current_logs + STARTING_OFFSET
+        bot.delete_message(channel_id_int, temp_msg.message_id)
+        
+        LIMIT = 1000000 
+        remaining = LIMIT - total_requests
+        percent = (total_requests / LIMIT) * 100
+        
+        text = (
+            f"📊 **Global Network Stats (View from LinkScanner)**\n\n"
+            f"👥 **Unique Users:** {active_users}\n"
+            f"🔄 **Total Requests:** {total_requests:,}\n"
+            f"⚠️ **Network Limit:** 1,000,000\n"
+            f"✅ **Remaining:** {remaining:,}\n\n"
+            f"📈 **Load:** {percent:.4f}%\n"
+            f"🕒 Updated: `{datetime.now().strftime('%H:%M:%S')}`"
+        )
+        
+        # Manual Refresh Button
+        markup = telebot.types.InlineKeyboardMarkup()
+        markup.add(telebot.types.InlineKeyboardButton("🔄 Refresh Network Stats", callback_data="refresh_stats"))
+        
+        bot.reply_to(message, text, parse_mode="Markdown", reply_markup=markup)
+    except Exception as e:
+        bot.reply_to(message, f"⚠️ Error: {e}")
+
+# [ADDED] Callback Handler for Refresh
+@bot.callback_query_handler(func=lambda call: call.data == "refresh_stats")
+def refresh_callback(call):
+    try:
+        # Pura logic dobara run karne ki bajaye hum seedha function call kar rahe hain
+        # Lekin edit karne ke liye hum message delete karke naya bhej sakte hain ya edit kar sakte hain
+        # Simple tareeka: User ko naya stats dikha do ya message edit karo (yahan hum edit try karte hain)
+        
+        if not LOG_CHANNEL_ID: return
+
+        channel_id_int = int(LOG_CHANNEL_ID)
+        active_users = bot.get_chat_member_count(channel_id_int)
+        
+        temp_msg = bot.send_message(channel_id_int, "Syncing...")
+        current_logs = temp_msg.message_id - 1
+        total_requests = current_logs + STARTING_OFFSET
+        bot.delete_message(channel_id_int, temp_msg.message_id)
+        
+        LIMIT = 1000000
+        remaining = LIMIT - total_requests
+        percent = (total_requests / LIMIT) * 100
+        
+        text = (
+            f"📊 **Global Network Stats (View from LinkScanner)**\n\n"
+            f"👥 **Unique Users:** {active_users}\n"
+            f"🔄 **Total Requests:** {total_requests:,}\n"
+            f"⚠️ **Network Limit:** 1,000,000\n"
+            f"✅ **Remaining:** {remaining:,}\n\n"
+            f"📈 **Load:** {percent:.4f}%\n"
+            f"🕒 Updated: `{datetime.now().strftime('%H:%M:%S')}`"
+        )
+        
+        markup = telebot.types.InlineKeyboardMarkup()
+        markup.add(telebot.types.InlineKeyboardButton("🔄 Refresh Network Stats", callback_data="refresh_stats"))
+        
+        bot.edit_message_text(text, chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode="Markdown", reply_markup=markup)
+        bot.answer_callback_query(call.id, "Stats Refreshed!")
+    except: 
+        bot.answer_callback_query(call.id, "Error Refreshing")
+
+# ---------------------------------------------------------
+# 3. UNSHORTENER LOGIC
 # ---------------------------------------------------------
 def unshorten_url(url):
     try:
-        # Session banate hain taaki cookies store hon
-        session = requests.Session()
-        
-        # Bilkul Real Chrome Browser ke Headers
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
-            "Referer": "https://www.google.com/",
-            "Upgrade-Insecure-Requests": "1"
-        }
-        
-        # Allow Redirects True rakha hai
-        response = session.get(url, headers=headers, timeout=10, allow_redirects=True)
-        
-        # Check: Kya URL badla?
-        if response.url == url:
-            # Agar same raha, toh shayaad redirect fail hua
-            return None, "No Redirect Detected (Protected Link)"
-            
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        # Fixed: Changed requests.head to requests.get so Bitly behaves correctly
+        response = requests.get(url, allow_redirects=True, headers=headers, timeout=9)
         return response.url, response.status_code
-        
+    except requests.exceptions.Timeout:
+        return None, "Timeout"
     except Exception as e:
         return None, str(e)
 
 def is_suspicious(url):
-    bad_keywords = ['hack', 'free-money', 'steal', 'login-verify', 'ngrok', 'crypto-gift']
+    bad_keywords = ['hack', 'free-money', 'steal', 'login-verify', 'ngrok']
     for word in bad_keywords:
         if word in url.lower(): return True
     return False
 
 # ---------------------------------------------------------
-# 3. TRACKING & STATS
+# 4. BOT COMMANDS
 # ---------------------------------------------------------
-def track_activity(message):
-    if not LOG_CHANNEL_ID: return
-    try:
-        bot.send_message(int(LOG_CHANNEL_ID), f"🕵️‍♂️ Hit from LinkScanner | User: {message.from_user.id}")
-    except: pass
 
-@bot.message_handler(commands=['stats'])
-def stats_command(message):
-    # (Same old stats logic kept simple for brevity)
-    bot.reply_to(message, "📊 **System Status:** Online & Scanning")
-
-# ---------------------------------------------------------
-# 4. BOT HANDLERS
-# ---------------------------------------------------------
 @bot.message_handler(func=lambda m: MAINTENANCE_MODE == 'True')
 def maintenance_msg(message):
     bot.reply_to(message, "⚠️ **Maintenance Mode Active.**")
+    return
 
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
     track_activity(message) 
     bot.reply_to(message, 
-        "🕵️‍♂️ **Deep Link Scanner**\n\n"
-        "Send me any shortened link (bit.ly, tinyurl) and I will dig out the real destination."
+        "🕵️‍♂️ **MSMAXPRO Link Scanner**\n\n"
+        "Send me any Link to reveal its real destination.\n"
+        "⚡ **Supports:** bit.ly, tinyurl, t.co, etc."
     )
 
 @bot.message_handler(func=lambda message: True)
@@ -88,25 +161,17 @@ def scan_link(message):
     if not (text.startswith("http://") or text.startswith("https://")): return 
 
     track_activity(message) 
-    msg = bot.reply_to(message, "🔍 **Bypassing Protection & Scanning...**")
+
+    msg = bot.reply_to(message, "🔍 **Scanning...**")
     
     real_url, status = unshorten_url(text)
     
-    # CASE 1: Scan Fail hua
     if not real_url:
-        fail_text = (
-            f"⚠️ **SCAN BLOCKED**\n"
-            f"━━━━━━━━━━━━━━━━\n"
-            f"🔴 **Link:** {text}\n"
-            f"❌ **Reason:** Server blocked the bot or No Redirect found.\n"
-            f"🔒 This link might be protected."
-        )
-        bot.edit_message_text(fail_text, message.chat.id, msg.message_id)
+        bot.edit_message_text(f"❌ **Error:** Could not open link. ({status})", message.chat.id, msg.message_id)
         return
 
-    # CASE 2: Scan Success
     safety_status = "✅ Safe to Click"
-    if is_suspicious(real_url): safety_status = "⚠️ **SUSPICIOUS / RISKY**"
+    if is_suspicious(real_url): safety_status = "⚠️ **SUSPICIOUS**"
     
     domain = urlparse(real_url).netloc
 
@@ -123,12 +188,14 @@ def scan_link(message):
     bot.send_message(message.chat.id, output, parse_mode="Markdown", disable_web_page_preview=True)
 
 # ---------------------------------------------------------
-# 5. SERVER RUN
+# 5. SERVER SETUP
 # ---------------------------------------------------------
 @app.route('/', methods=['POST'])
 def webhook():
     if request.headers.get('content-type') == 'application/json':
-        bot.process_new_updates([telebot.types.Update.de_json(request.get_data().decode('utf-8'))])
+        json_string = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
+        bot.process_new_updates([update])
         return ''
     return Response(status=403)
 
